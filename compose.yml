@@ -1,0 +1,69 @@
+name: byteck
+
+x-defaults: &defaults
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  db:
+    <<: *defaults
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes: ["dbdata:/var/lib/postgresql/data"]
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    mem_limit: 1g
+
+  app:
+    <<: *defaults
+    build: .
+    image: byteck-app
+    depends_on: { db: { condition: service_healthy } }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://app:${DB_PASSWORD}@db:5432/app
+    # Only reachable from this machine. Put a reverse proxy with HTTPS in front, or use the tunnel profile.
+    ports: ["127.0.0.1:${APP_PORT:-3100}:3100"]
+    volumes: ["uploads:/app/server/data"]
+    read_only: true
+    tmpfs: ["/tmp:size=128m"]
+    cap_drop: [ALL]
+    networks: [internal, outside]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    mem_limit: 2g
+
+  tunnel:
+    <<: *defaults
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:2026.9.1
+    depends_on: [app]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    networks: [outside]
+    read_only: true
+    cap_drop: [ALL]
+    mem_limit: 256m
+
+networks:
+  internal:
+    internal: true
+  outside:
+
+volumes:
+  dbdata:
+  uploads:
